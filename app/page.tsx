@@ -2,15 +2,22 @@
 'use client';
 
 import * as ort from "onnxruntime-web";
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
+
+// nextui
+import { Button } from "@nextui-org/react";
 import { Progress } from "@nextui-org/react";
 import { Spinner } from "@nextui-org/spinner";
 import { Card, CardBody, CardHeader } from "@nextui-org/react";
 import { Divider } from "@nextui-org/react";
 
+// icons
+import { Upload } from "lucide-react";
+
+// functions
 const MAX_WIDTH: number = 224;
 const MAX_HEIGHT: number = 224;
-const IMAGE_CLASSIFICATION_DOWNLOAD_URL = "https://api.tensorcube.net/server/status/s3/classification";
+const IMAGE_CLASSIFICATION_DOWNLOAD_URL = "https://api.tensorcube.net/server/s3/classification";
 
 function checkWasmAvailability() {
   try {
@@ -95,9 +102,126 @@ async function loadONNXModel(modelWeight: ArrayBuffer): Promise<ort.InferenceSes
   }
 }
 
+// Components
+
+interface ImageUploadProps {
+  onImageUploaded: (tensor: ort.Tensor) => void;
+}
+
+const ImageUpload: React.FC<ImageUploadProps> = ({ onImageUploaded }) => {
+  const [image, setImage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const processImage = useCallback(async (file: File) => {
+    if (file.size > 5 * 1024 * 1024) {
+      setError("파일 크기는 5MB를 초과할 수 없습니다.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const img = new Image();
+      img.onload = async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = MAX_WIDTH;
+        canvas.height = MAX_HEIGHT;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, MAX_WIDTH, MAX_HEIGHT);
+        const imageData = ctx?.getImageData(0, 0, MAX_WIDTH, MAX_HEIGHT);
+
+        if (imageData) {
+          const rgbData = new Float32Array(3 * MAX_WIDTH * MAX_HEIGHT);
+          for (let i = 0, j = 0; i < imageData.data.length; i += 4, j += 3) {
+            rgbData[j] = imageData.data[i] / 255.0;   // R
+            rgbData[j + 1] = imageData.data[i + 1] / 255.0; // G
+            rgbData[j + 2] = imageData.data[i + 2] / 255.0; // B
+          }
+          const tensor = new ort.Tensor('float32', rgbData, [1, 3, MAX_HEIGHT, MAX_WIDTH]);
+          onImageUploaded(tensor);
+        }
+
+        setImage(canvas.toDataURL());
+        setError(null);
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => {
+      setError("이미지 로드 중 오류가 발생했습니다.");
+    };
+    reader.readAsDataURL(file);
+  }, [onImageUploaded]);
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processImage(file);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      processImage(file);
+    }
+  };
+
+  return (
+    <Card
+      isPressable
+      onPress={() => fileInputRef.current?.click()}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      className="w-full max-w-3xl mx-auto"
+    >
+      <CardBody className="flex flex-col items-center justify-center p-8 min-h-[400px]">
+        {image ? (
+          <div className="w-full h-full flex items-center justify-center">
+            <img
+              src={image}
+              alt="Uploaded image"
+              className="max-w-full max-h-[350px] object-contain"
+            />
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full">
+            <Upload className="w-16 h-16 mb-4 text-gray-400" />
+            <p className="text-center text-gray-600 text-lg">
+              클릭하거나 이미지를 여기에 드래그하세요
+            </p>
+          </div>
+        )}
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleImageChange}
+          accept="image/*"
+          className="hidden"
+        />
+        <Button
+          color="primary"
+          className="mt-4"
+          onPress={() => fileInputRef.current?.click()}
+        >
+          이미지 선택
+        </Button>
+        {error && <p className="text-red-500 mt-2">{error}</p>}
+      </CardBody>
+    </Card>
+  );
+};
+
+// Page
+
 export default function Page() {
   const [isWasmAvailable, setIsWasmAvailable] = useState<boolean | null>(null);
   const [model, setModel] = useState<ort.InferenceSession | null>(null);
+  const [inputTensor, setInputTensor] = useState<ort.Tensor | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const smoothProgressRef = useRef<number>(0);
@@ -138,6 +262,10 @@ export default function Page() {
     return () => cancelAnimationFrame(animationId);
   }, []);
 
+  const handleImageUploaded = useCallback((tensor: ort.Tensor) => {
+    setInputTensor(tensor);
+  }, []);
+
   return (
     <div className="flex justify-center items-center h-screen">
       {isWasmAvailable === null ? (
@@ -176,8 +304,24 @@ export default function Page() {
 
           <Divider />
 
-          <CardBody>
-            <p></p>
+          <CardBody className="flex flex-row">
+            <div className="flex-1 pr-4">
+              <ImageUpload onImageUploaded={handleImageUploaded} />
+            </div>
+            <Divider orientation="vertical" className="mx-4" />
+            <div className="flex-1 pl-4">
+              {/* <p className="text-medium text-default-300">Input Tensor Status: {inputTensor ? 'Ready' : 'Not Ready'}</p> */}
+              {inputTensor === null ? (
+                <p className="text-medium text-default-300">Input Tensor Status : Not ready</p>
+              )
+              : (
+                <div>
+                  <p className="text-medium text-default-900">Input Tensor Status : Ready</p>
+                  <p className="text-small text-default-400">⭐ Tensor Shape : {inputTensor.dims[0]}, {inputTensor.dims[1]}, {inputTensor.dims[2]}, {inputTensor.dims[3]}</p>
+                </div>
+              )
+              }
+            </div>
           </CardBody>
         </Card>
       )}
