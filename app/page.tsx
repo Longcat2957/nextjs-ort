@@ -20,6 +20,8 @@ const MAX_WIDTH: number = 224;
 const MAX_HEIGHT: number = 224;
 const IMAGE_CLASSIFICATION_DOWNLOAD_URL = "https://api.tensorcube.net/server/s3/classification";
 
+ort.env.wasm.numThreads = 1;  // WASM 스레드 수 설정
+
 // functions
 function checkWasmAvailability() {
   try {
@@ -94,8 +96,9 @@ async function downloadONNXModel(
 async function loadONNXModel(modelWeight: ArrayBuffer): Promise<ort.InferenceSession> {
   try {
     const session = await ort.InferenceSession.create(modelWeight, {
-      executionProviders: ['wasm'],
-      graphOptimizationLevel: 'all'
+      executionProviders: ['webgl'],
+      graphOptimizationLevel: 'extended',
+
     });
     return session;
   } catch (error) {
@@ -106,16 +109,29 @@ async function loadONNXModel(modelWeight: ArrayBuffer): Promise<ort.InferenceSes
 
 function getMaxArgs(tensor: ort.Tensor): number {
   const data = tensor.data as Float32Array;
-  let max = data[0];
+  
+  if (!data || data.length === 0) {
+    throw new Error("Tensor data is empty or undefined.");
+  }
+
   let maxIndex = 0;
+  let maxValue = data[0];
+
   for (let i = 1; i < data.length; i++) {
-    if (data[i] > max) {
+    if (data[i] > maxValue) {
+      maxValue = data[i];
       maxIndex = i;
-      max = data[i];
     }
   }
-  console.log("max value: ", max);
+
   return maxIndex;
+}
+
+function getTopKIndices(tensor: ort.Tensor, k: number): number[] {
+  const data = tensor.data as Float32Array;
+  const indices = Array.from(data.keys());  // 인덱스 배열 생성
+  indices.sort((a, b) => data[b] - data[a]);  // 확률 값에 따른 정렬
+  return indices.slice(0, k);  // 상위 k개의 인덱스 반환
 }
 
 function getClass(value: number): string {
@@ -152,9 +168,9 @@ const ImageUpload: React.FC<ImageUploadProps> = ({ onImageUploaded }) => {
         if (imageData) {
           const rgbData = new Float32Array(3 * MAX_WIDTH * MAX_HEIGHT);
           for (let i = 0, j = 0; i < imageData.data.length; i += 4, j += 3) {
-            rgbData[j] = imageData.data[i] / 255.0;   // R
-            rgbData[j + 1] = imageData.data[i + 1] / 255.0; // G
-            rgbData[j + 2] = imageData.data[i + 2] / 255.0; // B
+            rgbData[j] = imageData.data[i] / 255.0;   // R 채널 정규화
+            rgbData[j + 1] = imageData.data[i + 1] / 255.0; // G 채널 정규화
+            rgbData[j + 2] = imageData.data[i + 2] / 255.0; // B 채널 정규화
           }
           const tensor = new ort.Tensor('float32', rgbData, [1, 3, MAX_HEIGHT, MAX_WIDTH]);
           onImageUploaded(tensor);
@@ -301,6 +317,7 @@ export default function Page() {
       feeds[model.inputNames[0]] = inputTensor;
       const outputData = await model.run(feeds);
       const output = outputData[model.outputNames[0]];
+      console.log(output.data);
       setOutputTensor(output);
 
     } catch (error) {
