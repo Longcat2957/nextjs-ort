@@ -96,8 +96,8 @@ async function downloadONNXModel(
 async function loadONNXModel(modelWeight: ArrayBuffer): Promise<ort.InferenceSession> {
   try {
     const session = await ort.InferenceSession.create(modelWeight, {
-      executionProviders: ['webgl'],
-      graphOptimizationLevel: 'extended',
+      executionProviders: ['wasm'],
+      graphOptimizationLevel: 'all',
 
     });
     return session;
@@ -162,20 +162,41 @@ const ImageUpload: React.FC<ImageUploadProps> = ({ onImageUploaded }) => {
         canvas.width = MAX_WIDTH;
         canvas.height = MAX_HEIGHT;
         const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, MAX_WIDTH, MAX_HEIGHT);
-        const imageData = ctx?.getImageData(0, 0, MAX_WIDTH, MAX_HEIGHT);
 
-        if (imageData) {
-          const rgbData = new Float32Array(3 * MAX_WIDTH * MAX_HEIGHT);
-          for (let i = 0, j = 0; i < imageData.data.length; i += 4, j += 3) {
-            rgbData[j] = imageData.data[i] / 255.0;   // R 채널 정규화
-            rgbData[j + 1] = imageData.data[i + 1] / 255.0; // G 채널 정규화
-            rgbData[j + 2] = imageData.data[i + 2] / 255.0; // B 채널 정규화
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, MAX_WIDTH, MAX_HEIGHT);
+          const imageData = ctx.getImageData(0, 0, MAX_WIDTH, MAX_HEIGHT);
+
+          if (imageData) {
+            const rData = new Array(MAX_WIDTH * MAX_HEIGHT);
+            const gData = new Array(MAX_WIDTH * MAX_HEIGHT);
+            const bData = new Array(MAX_WIDTH * MAX_HEIGHT);
+
+            // red
+            for (let i = 0; i < MAX_WIDTH * MAX_HEIGHT; i++) {
+              rData[i] = imageData.data[i * 4]
+            }
+            // green
+            for (let i = 0; i < MAX_WIDTH * MAX_HEIGHT; i++) {
+              gData[i] = imageData.data[i * 4 + 1];
+            }
+            // blue
+            for (let i = 0; i < MAX_WIDTH * MAX_HEIGHT; i++) {
+              bData[i] = imageData.data[i * 4 + 2];
+            }
+
+            const rgbData = rData.concat(gData).concat(bData);
+            let i, l = rgbData.length;
+
+            const float32Data = new Float32Array(3 * MAX_HEIGHT * MAX_WIDTH);
+            for (i = 0; i < l; i++) {
+              float32Data[i] = rgbData[i] / 255.0; // convert to float
+            }
+
+            const tensor = new ort.Tensor('float32', float32Data, [1, 3, MAX_HEIGHT, MAX_WIDTH]);
+            onImageUploaded(tensor);
           }
-          const tensor = new ort.Tensor('float32', rgbData, [1, 3, MAX_HEIGHT, MAX_WIDTH]);
-          onImageUploaded(tensor);
         }
-
         setImage(canvas.toDataURL());
         setError(null);
       };
@@ -317,7 +338,7 @@ export default function Page() {
       feeds[model.inputNames[0]] = inputTensor;
       const outputData = await model.run(feeds);
       const output = outputData[model.outputNames[0]];
-      console.log(output.data);
+      // console.log(output.data);
       setOutputTensor(output);
 
     } catch (error) {
