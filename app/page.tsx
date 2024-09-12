@@ -14,11 +14,13 @@ import { Divider } from "@nextui-org/react";
 // icons
 import { Upload } from "lucide-react";
 
-// functions
+// constatns
+import { IMAGENET_KEY_VALUE } from "./constants";
 const MAX_WIDTH: number = 224;
 const MAX_HEIGHT: number = 224;
 const IMAGE_CLASSIFICATION_DOWNLOAD_URL = "https://api.tensorcube.net/server/s3/classification";
 
+// functions
 function checkWasmAvailability() {
   try {
     if (typeof WebAssembly === 'object' &&
@@ -102,8 +104,25 @@ async function loadONNXModel(modelWeight: ArrayBuffer): Promise<ort.InferenceSes
   }
 }
 
-// Components
+function getMaxArgs(tensor: ort.Tensor): number {
+  const data = tensor.data as Float32Array;
+  let max = data[0];
+  let maxIndex = 0;
+  for (let i = 1; i < data.length; i++) {
+    if (data[i] > max) {
+      maxIndex = i;
+      max = data[i];
+    }
+  }
+  console.log("max value: ", max);
+  return maxIndex;
+}
 
+function getClass(value: number): string {
+  return IMAGENET_KEY_VALUE[value];
+}
+
+// Components
 interface ImageUploadProps {
   onImageUploaded: (tensor: ort.Tensor) => void;
 }
@@ -222,8 +241,10 @@ export default function Page() {
   const [isWasmAvailable, setIsWasmAvailable] = useState<boolean | null>(null);
   const [model, setModel] = useState<ort.InferenceSession | null>(null);
   const [inputTensor, setInputTensor] = useState<ort.Tensor | null>(null);
+  const [outputTensor, setOutputTensor] = useState<ort.Tensor | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  const [isInferenceRunning, setIsInferenceRunning] = useState<boolean>(false);
   const smoothProgressRef = useRef<number>(0);
 
   useEffect(() => {
@@ -262,9 +283,33 @@ export default function Page() {
     return () => cancelAnimationFrame(animationId);
   }, []);
 
+  // 이미지 업로드 후 처리
   const handleImageUploaded = useCallback((tensor: ort.Tensor) => {
     setInputTensor(tensor);
   }, []);
+
+  // 추론 실행
+  const handleInference = async () => {
+    // 모델과 입력 텐서가 준비되지 않은 경우
+    if (!model || !inputTensor) return;
+
+    // flag 설정
+    setIsInferenceRunning(true);
+
+    try {
+      const feeds: Record<string, ort.Tensor> = {};
+      feeds[model.inputNames[0]] = inputTensor;
+      const outputData = await model.run(feeds);
+      const output = outputData[model.outputNames[0]];
+      setOutputTensor(output);
+
+    } catch (error) {
+      console.error("Error during inference:", error);
+      setError("추론 중 오류가 발생했습니다.");
+    } finally {
+      setIsInferenceRunning(false);
+    }
+  }
 
   return (
     <div className="flex justify-center items-center h-screen">
@@ -299,6 +344,7 @@ export default function Page() {
             <div className="flex flex-col">
               <p className="text-xl">Image Classification</p>
               <p className="text-small text-default-500">EfficientViT L1 (ImageNet-1k)</p>
+              <p className="text-small text-default-300">Input Node : {model.inputNames} Output Node : {model.outputNames}</p>
             </div>
           </CardHeader>
 
@@ -310,7 +356,6 @@ export default function Page() {
             </div>
             <Divider orientation="vertical" className="mx-4" />
             <div className="flex-1 pl-4">
-              {/* <p className="text-medium text-default-300">Input Tensor Status: {inputTensor ? 'Ready' : 'Not Ready'}</p> */}
               {inputTensor === null ? (
                 <p className="text-medium text-default-300">Input Tensor Status : Not ready</p>
               )
@@ -318,6 +363,32 @@ export default function Page() {
                 <div>
                   <p className="text-medium text-default-900">Input Tensor Status : Ready</p>
                   <p className="text-small text-default-400">⭐ Tensor Shape : {inputTensor.dims[0]}, {inputTensor.dims[1]}, {inputTensor.dims[2]}, {inputTensor.dims[3]}</p>
+                  <p className="text-small text-default-400">⭐ Tensor dtype : {inputTensor.type}</p>
+                  <p className="text-small text-default-400">⭐ Tensor location : {inputTensor.location}</p>
+
+                  <Divider className="my-4" />
+
+                  <Button color="primary" size="lg" fullWidth onPress={handleInference}>
+                    {isInferenceRunning ? <Spinner size="sm" /> : "Inference"}
+                  </Button>
+
+                  <Divider className="my-4" />
+                  {outputTensor === null ? (
+                    <div>
+                      <p className="text-medium text-default-300">Output Tensor Status : Not ready</p>
+                  </div>): (
+                    <div>
+                      <p className="text-medium text-default-900">Output Tensor Status : Done</p>
+                      <p className="text-small text-default-400">⭐ Output Shape : {outputTensor.dims.join(', ')}</p>
+                      <p className="text-small text-default-400">⭐ Output dtype : {outputTensor.type}</p>
+                      <p className="text-small text-default-400">⭐ Output location : {outputTensor.location}</p>
+
+                      <Divider className="my-2" />
+
+                      <p className="text-medium text-default-400">Output Tensor ArgMax : {getMaxArgs(outputTensor)}</p>
+                      <p className="text-medium text-default-900">Inference Results : {getClass(getMaxArgs(outputTensor))}</p>
+                    </div>
+                  )}
                 </div>
               )
               }
